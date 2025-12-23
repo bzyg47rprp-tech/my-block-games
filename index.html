@@ -1,0 +1,454 @@
+<!doctype html>
+<html lang="ja">
+<head>
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width,initial-scale=1,maximum-scale=1,user-scalable=no" />
+  <title>ブロック崩し（スマホUI＋パワーアップ）</title>
+  <style>
+    html, body { margin:0; height:100%; background:#111; color:#fff; font-family: system-ui, -apple-system, Segoe UI, Roboto, sans-serif; }
+    * { box-sizing:border-box; }
+    .wrap { height:100%; display:flex; flex-direction:column; align-items:center; justify-content:flex-start; gap:10px; padding:12px; }
+    .hud { width:min(96vw, 900px); display:flex; justify-content:space-between; align-items:flex-end; opacity:.92; gap:10px; }
+    .hud .left { display:flex; flex-direction:column; gap:4px; }
+    .hud .right { text-align:right; display:flex; flex-direction:column; gap:4px; }
+    .small { opacity:.7; font-size:13px; }
+
+    canvas {
+      background:#0b0b0b; border:1px solid #333; border-radius:12px;
+      touch-action:none; width:min(96vw, 900px); height:auto; aspect-ratio: 4 / 3;
+    }
+
+    .controls {
+      width:min(96vw, 900px);
+      display:flex; justify-content:space-between; gap:12px;
+      user-select:none;
+    }
+    .btn {
+      flex:1;
+      padding:14px 10px;
+      border-radius:14px;
+      background:#1a1a1a;
+      border:1px solid #333;
+      color:#fff;
+      font-size:18px;
+      font-weight:600;
+      text-align:center;
+      touch-action:none;
+    }
+    .btn:active { transform: scale(0.98); opacity:.9; }
+
+    .hint { width:min(96vw, 900px); opacity:.65; font-size:13px; text-align:center; }
+  </style>
+</head>
+<body>
+  <div class="wrap">
+    <div class="hud">
+      <div class="left">
+        <div id="scoreText">Score: 0</div>
+        <div class="small" id="infoText">Kills: - / Power: -</div>
+      </div>
+      <div class="right">
+        <div id="lifeText">Life: 3</div>
+        <div class="small" id="waveText">Wave: 1</div>
+      </div>
+    </div>
+
+    <canvas id="game" width="800" height="600"></canvas>
+
+    <div class="controls">
+      <div class="btn" id="btnLeft">◀</div>
+      <div class="btn" id="btnRight">▶</div>
+    </div>
+
+    <div class="hint">操作：左右ボタン（押しっぱOK）/ ドラッグ / キー。 GameOver後：タップ or R</div>
+  </div>
+
+  <script>
+    // =========================
+    // 基本（固定座標 800x600）
+    // =========================
+    const GAME_W = 800, GAME_H = 600;
+
+    const canvas = document.getElementById("game");
+    const ctx = canvas.getContext("2d");
+
+    const scoreText = document.getElementById("scoreText");
+    const lifeText  = document.getElementById("lifeText");
+    const waveText  = document.getElementById("waveText");
+    const infoText  = document.getElementById("infoText");
+
+    // DPR対応（表示サイズ * dpr を実ピクセルに）
+    function applyDPR() {
+      const dpr = Math.max(1, Math.min(window.devicePixelRatio || 1, 2));
+      const rect = canvas.getBoundingClientRect();
+      canvas.width  = Math.floor(rect.width * dpr);
+      canvas.height = Math.floor(rect.height * dpr);
+      ctx.setTransform(canvas.width / GAME_W, 0, 0, canvas.height / GAME_H, 0, 0);
+    }
+    requestAnimationFrame(applyDPR);
+    window.addEventListener("resize", () => requestAnimationFrame(applyDPR));
+
+    // =========================
+    // 入力
+    // =========================
+    const keys = {};
+    window.addEventListener("keydown", (e) => {
+      keys[e.key.toLowerCase()] = true;
+      if (gameOver && e.key.toLowerCase() === "r") restart();
+    });
+    window.addEventListener("keyup", (e) => keys[e.key.toLowerCase()] = false);
+
+    // スマホ左右ボタン（押しっぱ）
+    let holdLeft = false, holdRight = false;
+    const btnLeft = document.getElementById("btnLeft");
+    const btnRight = document.getElementById("btnRight");
+
+    function bindHold(btn, onDown, onUp) {
+      btn.addEventListener("pointerdown", (e) => { e.preventDefault(); btn.setPointerCapture(e.pointerId); onDown(); });
+      btn.addEventListener("pointerup",   (e) => { e.preventDefault(); onUp(); });
+      btn.addEventListener("pointercancel", (e) => { e.preventDefault(); onUp(); });
+      btn.addEventListener("pointerleave", (e) => { /* leaveは無視（capture中は来ないこと多い） */ });
+    }
+    bindHold(btnLeft,  () => holdLeft = true,  () => holdLeft = false);
+    bindHold(btnRight, () => holdRight = true, () => holdRight = false);
+
+    // ドラッグでパドルを追従
+    let dragging = false;
+
+    function canvasToWorld(clientX, clientY) {
+      const rect = canvas.getBoundingClientRect();
+      return {
+        x: (clientX - rect.left) * (GAME_W / rect.width),
+        y: (clientY - rect.top)  * (GAME_H / rect.height),
+      };
+    }
+
+    canvas.addEventListener("pointerdown", (e) => {
+      canvas.setPointerCapture(e.pointerId);
+      if (gameOver) { restart(); return; }
+      dragging = true;
+      const p = canvasToWorld(e.clientX, e.clientY);
+      paddle.x = p.x - paddle.w / 2;
+      clampPaddle();
+    });
+    canvas.addEventListener("pointermove", (e) => {
+      if (!dragging) return;
+      const p = canvasToWorld(e.clientX, e.clientY);
+      paddle.x = p.x - paddle.w / 2;
+      clampPaddle();
+    });
+    canvas.addEventListener("pointerup", () => dragging = false);
+
+    // =========================
+    // ゲーム状態
+    // =========================
+    const paddle = { x: 320, y: 540, w: 160, h: 16, speed: 520, baseW: 160 };
+    let balls = []; // 複数ボール対応
+
+    const BR = { rows: 6, cols: 10, w: 70, h: 22, gap: 8, top: 80, left: 45 };
+    let blocks = [];
+    let drops = []; // パワーアップ落下アイテム
+
+    let score = 0;
+    let life = 3;
+    let wave = 1;
+    let gameOver = false;
+
+    // パワーアップ管理
+    let powerName = "-";
+    let paddleBoostTimer = 0; // 秒
+    let speedBoostTimer  = 0; // 秒
+
+    function updateHUD() {
+      scoreText.textContent = `Score: ${score}`;
+      lifeText.textContent = `Life: ${life}`;
+      waveText.textContent = `Wave: ${wave}`;
+      infoText.textContent = `Power: ${powerName}`;
+    }
+
+    function clamp(v, a, b) { return Math.max(a, Math.min(b, v)); }
+
+    function clampPaddle() {
+      paddle.x = clamp(paddle.x, 0, GAME_W - paddle.w);
+    }
+
+    function makeBlocks() {
+      blocks = [];
+      for (let r = 0; r < BR.rows; r++) {
+        for (let c = 0; c < BR.cols; c++) {
+          blocks.push({
+            x: BR.left + c * (BR.w + BR.gap),
+            y: BR.top  + r * (BR.h + BR.gap),
+            w: BR.w,
+            h: BR.h,
+            alive: true,
+          });
+        }
+      }
+    }
+
+    function spawnBall() {
+      const baseSpeed = 420 + wave * 18; // waveでちょい速く
+      const dir = Math.random() < 0.5 ? -1 : 1;
+      balls.push({
+        x: paddle.x + paddle.w/2,
+        y: paddle.y - 12,
+        r: 10,
+        vx: dir * (baseSpeed * 0.45),
+        vy: -baseSpeed * 0.75,
+      });
+    }
+
+    function restart() {
+      score = 0; life = 3; wave = 1; gameOver = false;
+      powerName = "-"; paddleBoostTimer = 0; speedBoostTimer = 0;
+
+      paddle.w = paddle.baseW;
+      paddle.x = (GAME_W - paddle.w)/2;
+
+      drops = [];
+      makeBlocks();
+
+      balls = [];
+      spawnBall();
+
+      lastTime = performance.now();
+      updateHUD();
+    }
+
+    // =========================
+    // 当たり判定
+    // =========================
+    function hitCircleRect(cx, cy, r, rx, ry, rw, rh) {
+      const nx = clamp(cx, rx, rx + rw);
+      const ny = clamp(cy, ry, ry + rh);
+      const dx = cx - nx;
+      const dy = cy - ny;
+      return (dx*dx + dy*dy) <= r*r;
+    }
+
+    // =========================
+    // パワーアップ（落下アイテム）
+    // =========================
+    // 種類：P=パドル拡大, S=速度UP, M=ボール増殖
+    function maybeDrop(x, y) {
+      if (Math.random() > 0.25) return; // 25%で落とす
+      const types = ["P", "S", "M"];
+      const t = types[Math.floor(Math.random()*types.length)];
+      drops.push({ x, y, w: 24, h: 24, vy: 160, type: t, alive: true });
+    }
+
+    function applyPower(type) {
+      if (type === "P") {
+        powerName = "Paddle+";
+        paddleBoostTimer = 10; // 10秒
+        paddle.w = paddle.baseW * 1.4;
+        clampPaddle();
+      } else if (type === "S") {
+        powerName = "Speed+";
+        speedBoostTimer = 8; // 8秒
+      } else if (type === "M") {
+        powerName = "MultiBall";
+        // ボール追加（2個増やす）
+        spawnBall();
+        spawnBall();
+      }
+      updateHUD();
+    }
+
+    // =========================
+    // 更新
+    // =========================
+    let lastTime = performance.now();
+
+    function update(dt) {
+      if (gameOver) return;
+
+      // タイマー更新
+      if (paddleBoostTimer > 0) {
+        paddleBoostTimer -= dt;
+        if (paddleBoostTimer <= 0) {
+          paddle.w = paddle.baseW;
+          powerName = "-";
+          clampPaddle();
+          updateHUD();
+        }
+      }
+      if (speedBoostTimer > 0) {
+        speedBoostTimer -= dt;
+        if (speedBoostTimer <= 0) {
+          powerName = "-";
+          updateHUD();
+        }
+      }
+
+      // パドル移動（キー＋ボタン）
+      const moveDir =
+        (keys["arrowright"] || keys["d"] || holdRight ? 1 : 0) -
+        (keys["arrowleft"]  || keys["a"] || holdLeft  ? 1 : 0);
+
+      if (!dragging && moveDir !== 0) {
+        paddle.x += moveDir * paddle.speed * dt;
+        clampPaddle();
+      }
+
+      // ボール更新（複数）
+      const speedMul = (speedBoostTimer > 0) ? 1.35 : 1.0;
+
+      for (const ball of balls) {
+        ball.x += ball.vx * dt * speedMul;
+        ball.y += ball.vy * dt * speedMul;
+
+        // 壁反射
+        if (ball.x - ball.r < 0) { ball.x = ball.r; ball.vx *= -1; }
+        if (ball.x + ball.r > GAME_W) { ball.x = GAME_W - ball.r; ball.vx *= -1; }
+        if (ball.y - ball.r < 0) { ball.y = ball.r; ball.vy *= -1; }
+
+        // パドル
+        if (hitCircleRect(ball.x, ball.y, ball.r, paddle.x, paddle.y, paddle.w, paddle.h) && ball.vy > 0) {
+          const hitPos = (ball.x - (paddle.x + paddle.w/2)) / (paddle.w/2);
+          ball.vx = 520 * hitPos;
+          ball.vy *= -1;
+          ball.y = paddle.y - ball.r - 0.5;
+        }
+
+        // ブロック
+        for (const b of blocks) {
+          if (!b.alive) continue;
+
+          if (hitCircleRect(ball.x, ball.y, ball.r, b.x, b.y, b.w, b.h)) {
+            b.alive = false;
+            score += 10;
+            updateHUD();
+
+            // ドロップ抽選（ブロック中心）
+            maybeDrop(b.x + b.w/2 - 12, b.y + b.h/2 - 12);
+
+            // 反射方向（簡易）
+            const prevX = ball.x - ball.vx * dt * speedMul;
+            const prevY = ball.y - ball.vy * dt * speedMul;
+            const wasInsideX = (prevX >= b.x && prevX <= b.x + b.w);
+            const wasInsideY = (prevY >= b.y && prevY <= b.y + b.h);
+
+            if (wasInsideX) ball.vy *= -1;
+            else if (wasInsideY) ball.vx *= -1;
+            else ball.vy *= -1;
+
+            break;
+          }
+        }
+      }
+
+      // 落下したボールを消す
+      balls = balls.filter(b => b.y - b.r <= GAME_H);
+
+      // ボールが全部落ちたらミス
+      if (balls.length === 0) {
+        life--;
+        updateHUD();
+        if (life <= 0) { gameOver = true; return; }
+        spawnBall();
+      }
+
+      // 落下アイテム更新
+      for (const d of drops) {
+        if (!d.alive) continue;
+        d.y += d.vy * dt;
+
+        // パドル取得
+        if (hitCircleRect(d.x + d.w/2, d.y + d.h/2, 2, paddle.x, paddle.y, paddle.w, paddle.h)) {
+          d.alive = false;
+          applyPower(d.type);
+        }
+
+        // 画面外
+        if (d.y > GAME_H + 30) d.alive = false;
+      }
+      drops = drops.filter(d => d.alive);
+
+      // 全消しで次Wave
+      const remaining = blocks.reduce((n, b) => n + (b.alive ? 1 : 0), 0);
+      if (remaining === 0) {
+        wave++;
+        makeBlocks();
+        drops = [];
+        // 次Waveはボール1個にして分かりやすく
+        balls = [];
+        spawnBall();
+        updateHUD();
+      }
+    }
+
+    // =========================
+    // 描画
+    // =========================
+    function draw() {
+      ctx.clearRect(0, 0, GAME_W, GAME_H);
+
+      // 背景
+      ctx.fillStyle = "#0b0b0b";
+      ctx.fillRect(0, 0, GAME_W, GAME_H);
+
+      // ブロック
+      ctx.fillStyle = "#e11";
+      for (const b of blocks) {
+        if (!b.alive) continue;
+        ctx.fillRect(b.x, b.y, b.w, b.h);
+      }
+
+      // パドル
+      ctx.fillStyle = "#ddd";
+      ctx.fillRect(paddle.x, paddle.y, paddle.w, paddle.h);
+
+      // ボール
+      ctx.fillStyle = "#7af";
+      for (const ball of balls) {
+        ctx.beginPath();
+        ctx.arc(ball.x, ball.y, ball.r, 0, Math.PI*2);
+        ctx.fill();
+      }
+
+      // 落下アイテム
+      for (const d of drops) {
+        ctx.fillStyle = (d.type === "P") ? "#6f6" : (d.type === "S") ? "#ff6" : "#6cf";
+        ctx.fillRect(d.x, d.y, d.w, d.h);
+        ctx.fillStyle = "#111";
+        ctx.font = "16px system-ui";
+        ctx.textAlign = "center";
+        ctx.textBaseline = "middle";
+        ctx.fillText(d.type, d.x + d.w/2, d.y + d.h/2 + 1);
+        ctx.textAlign = "left";
+        ctx.textBaseline = "alphabetic";
+      }
+
+      // GameOver
+      if (gameOver) {
+        ctx.fillStyle = "rgba(0,0,0,0.6)";
+        ctx.fillRect(0, 0, GAME_W, GAME_H);
+        ctx.fillStyle = "#fff";
+        ctx.textAlign = "center";
+        ctx.font = "64px system-ui, -apple-system, Segoe UI, Roboto, sans-serif";
+        ctx.fillText("Game Over", GAME_W/2, GAME_H/2 - 20);
+        ctx.font = "26px system-ui, -apple-system, Segoe UI, Roboto, sans-serif";
+        ctx.fillText("Tap or Press R to Restart", GAME_W/2, GAME_H/2 + 36);
+        ctx.textAlign = "left";
+      }
+    }
+
+    // =========================
+    // ループ
+    // =========================
+    function loop(now) {
+      const dt = Math.min((now - lastTime) / 1000, 0.05);
+      lastTime = now;
+
+      update(dt);
+      draw();
+      requestAnimationFrame(loop);
+    }
+
+    restart();
+    requestAnimationFrame(loop);
+  </script>
+</body>
+</html>
