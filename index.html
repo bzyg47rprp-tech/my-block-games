@@ -297,8 +297,7 @@
     function applyPower(type){
       if (type === "speed"){
         powerName = "SPEED";
-        paddleBoostTimer = BOOST_SECONDS;
-        paddle.speed = paddle.base.Speed * 1.55;
+        paddleBoostTimer = 7.0;
       } else if (type === "multi"){
         powerName = "MULTI";
         // いまのボールの数を基準に、2個追加（最大6個くらいに制限）
