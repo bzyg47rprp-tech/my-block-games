@@ -177,11 +177,11 @@
       const patterns = [
         // wave1:BLOCK
         [
-          "11110010000011111011111010001,
-          "10001010000010001010000010010,
-          "11110010000010001010000011100,
-          "10001010000010001010000010010,
-          "11110011111011111011111010001,
+          "11110010000011111011111010001",
+          "10001010000010001010000010010",
+          "11110010000010001010000011100",
+          "10001010000010001010000010010",
+          "11110011111011111011111010001",
         ]
         // wave2:スライム
         [
@@ -197,7 +197,46 @@
     　　　"0001111111111000",
     　　　"0000011111100000"
   ]
-  function makeAutoBlocks() {
+  // wave1,2はパターン／wave3以降は自動
+  if (wave <= patterns.length) {
+    makePatternBlocks(patterns[wave - 1]);
+  } else {
+    makeAutoBlocks();
+  }
+}
+
+function makePatternBlocks(pattern) {
+  const rows = pattern.length;
+  const cols = pattern[0].length; // 1行の文字数
+
+  const bw = 30;
+  const bh = 16;
+  const gap = 4;
+
+  const totalW = cols * (bw + gap) - gap;
+  const left = (GAME_W - totalW) / 2;
+  const top = 60;
+
+  for (let r = 0; r < rows; r++) {
+    // 念のため：行の長さが違うと崩れるので揃える
+    if (pattern[r].length !== cols) continue;
+
+    for (let c = 0; c < cols; c++) {
+      if (pattern[r][c] !== "1") continue;
+
+      blocks.push({
+        x: left + c * (bw + gap),
+        y: top + r * (bh + gap),
+        w: bw,
+        h: bh,
+        hp: 1,
+        alive: true,
+      });
+    }
+  }
+}
+
+function makeAutoBlocks() {
   const rows = Math.min(4 + wave, 10);
   const cols = Math.min(6 + wave, 14);
 
@@ -211,7 +250,6 @@
 
   for (let r = 0; r < rows; r++) {
     for (let c = 0; c < cols; c++) {
-
       // ランダムで隙間を作る（難易度調整）
       if (Math.random() < 0.15) continue;
 
@@ -226,7 +264,6 @@
     }
   }
 }
-];
 
     function spawnBall() {
       const baseSpeed = 420 + wave * 18; // waveでちょい速く
